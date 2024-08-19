@@ -39,56 +39,6 @@ class FluxControlNetOutput(BaseOutput):
     controlnet_single_block_samples: Tuple[torch.Tensor]
 
 
-class FluxUnionControlNetModeEmbedder(nn.Module):
-    def __init__(self, num_mode, out_channels):
-        super().__init__()
-        self.mode_embber = nn.Embedding(num_mode, out_channels)
-        self.norm = nn.LayerNorm(out_channels, eps=1e-6)
-        self.fc = nn.Linear(out_channels, out_channels)
-    
-    def forward(self, x):
-        x_emb = self.mode_embber(x)
-        x_emb = self.norm(x_emb)
-        x_emb = self.fc(x_emb)
-        x_emb = x_emb[:, 0]
-        return x_emb
-
-
-class FluxUnionControlNetInputEmbedder(nn.Module):
-    def __init__(self, in_channels, out_channels, num_attention_heads=24, attention_head_dim=128):
-        super().__init__()
-        self.x_embedder = nn.Sequential(nn.LayerNorm(in_channels), nn.Linear(in_channels, out_channels))
-        self.norm = AdaLayerNormContinuous(out_channels, out_channels, elementwise_affine=False, eps=1e-6)
-        self.fc = nn.Linear(out_channels, out_channels)
-        self.emb_embedder = nn.Sequential(nn.LayerNorm(out_channels), nn.Linear(out_channels, out_channels))
-
-        self.single_transformer_blocks = nn.ModuleList(
-            [
-                FluxSingleTransformerBlock(
-                    dim=out_channels,
-                    num_attention_heads=num_attention_heads,
-                    attention_head_dim=attention_head_dim,
-                )
-                for i in range(2)
-            ]
-        )
-
-        self.out = zero_module(nn.Linear(out_channels, out_channels))
-
-    def forward(self, x, mode_emb):
-        mode_token = self.emb_embedder(mode_emb)[:, None]
-        x_emb = self.fc(self.norm(self.x_embedder(x), mode_emb))
-        hidden_states = torch.cat([mode_token, x_emb], dim=1)
-        for index_block, block in enumerate(self.single_transformer_blocks):
-            hidden_states = block(
-                hidden_states=hidden_states,
-                temb=mode_emb,
-            )
-        hidden_states = self.out(hidden_states)
-        res = hidden_states[:, 1:]
-        return res
-
-
 class FluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
     _supports_gradient_checkpointing = True
 
@@ -156,11 +106,9 @@ class FluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         self.union = num_mode is not None
 
         if self.union:
-            self.controlnet_mode_embedder = zero_module(FluxUnionControlNetModeEmbedder(num_mode, self.inner_dim))
-            self.controlnet_x_embedder = FluxUnionControlNetInputEmbedder(in_channels, self.inner_dim)
-            self.controlnet_mode_token_embedder = nn.Sequential(nn.LayerNorm(self.inner_dim, eps=1e-6), nn.Linear(self.inner_dim, self.inner_dim))
-        else:
-            self.controlnet_x_embedder = zero_module(torch.nn.Linear(in_channels, self.inner_dim))
+            self.controlnet_mode_embedder = nn.Embedding(num_mode, self.inner_dim)
+
+        self.controlnet_x_embedder = zero_module(torch.nn.Linear(in_channels, self.inner_dim))
 
         self.gradient_checkpointing = False
 
@@ -329,24 +277,20 @@ class FluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
             else self.time_text_embed(timestep, guidance, pooled_projections)
         )
 
+        encoder_hidden_states = self.context_embedder(encoder_hidden_states)
+        
         if self.union:
             # union mode
             assert controlnet_mode is not None, 'using union-controlnet, but controlnet_mode is None'
-            emb_controlnet_mode = self.controlnet_mode_embedder(controlnet_mode)
-            temb = temb + emb_controlnet_mode
-            # add
-            hidden_states = hidden_states + self.controlnet_x_embedder(controlnet_cond, emb_controlnet_mode)
-        else:
-            hidden_states = hidden_states + self.controlnet_x_embedder(controlnet_cond)
 
-        encoder_hidden_states = self.context_embedder(encoder_hidden_states)
-
-        if self.union:
-            token_controlnet_mode = self.controlnet_mode_token_embedder(emb_controlnet_mode)[:, None]
-            encoder_hidden_states = torch.cat([token_controlnet_mode, encoder_hidden_states], dim=1)
+            # union mode emb
+            controlnet_mode_emb = self.controlnet_mode_embedder(controlnet_mode)
+            encoder_hidden_states = torch.cat([controlnet_mode_emb, encoder_hidden_states], dim=1)        
             txt_ids = torch.cat([txt_ids[:, :1], txt_ids], dim=1)
+            
+        hidden_states = hidden_states + self.controlnet_x_embedder(controlnet_cond)
 
-        txt_ids = txt_ids.expand(img_ids.size(0), -1, -1)
+        txt_ids = txt_ids.expand(img_ids.size(0), -1, -1) 
         ids = torch.cat((txt_ids, img_ids), dim=1)
         image_rotary_emb = self.pos_embed(ids)
 
