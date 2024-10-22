@@ -18,6 +18,7 @@ import copy
 import inspect
 import itertools
 import json
+import time
 import os
 import re
 from collections import OrderedDict
@@ -538,6 +539,7 @@ class ModelMixin(torch.nn.Module, PushToHubMixin):
         You should probably TRAIN this model on a down-stream task to be able to use it for predictions and inference.
         ```
         """
+        init = time.time()
         cache_dir = kwargs.pop("cache_dir", None)
         ignore_mismatched_sizes = kwargs.pop("ignore_mismatched_sizes", False)
         force_download = kwargs.pop("force_download", False)
@@ -637,6 +639,7 @@ class ModelMixin(torch.nn.Module, PushToHubMixin):
         }
 
         # load config
+        start = time.time()
         config, unused_kwargs, commit_hash = cls.load_config(
             config_path,
             cache_dir=cache_dir,
@@ -651,6 +654,7 @@ class ModelMixin(torch.nn.Module, PushToHubMixin):
             user_agent=user_agent,
             **kwargs,
         )
+        peint(time.time()-start,"config load")
         # no in-place modification of the original config.
         config = copy.deepcopy(config)
 
@@ -816,6 +820,7 @@ class ModelMixin(torch.nn.Module, PushToHubMixin):
                 )
 
             if low_cpu_mem_usage:
+                print("low cpu mem use")
                 # Instantiate model with empty weights
                 with accelerate.init_empty_weights():
                     model = cls.from_config(config, **unused_kwargs)
@@ -829,6 +834,7 @@ class ModelMixin(torch.nn.Module, PushToHubMixin):
                 if device_map is None and not is_sharded:
                     # `torch.cuda.current_device()` is fine here when `hf_quantizer` is not None.
                     # It would error out during the `validate_environment()` call above in the absence of cuda.
+                    
                     is_quant_method_bnb = (
                         getattr(model, "quantization_method", None) == QuantizationMethod.BITS_AND_BYTES
                     )
@@ -874,6 +880,7 @@ class ModelMixin(torch.nn.Module, PushToHubMixin):
                 else:  # else let accelerate handle loading and dispatching.
                     # Load weights and dispatch according to the device_map
                     # by default the device_map is None and the weights are loaded on the CPU
+                    print("accelerate load checkpoint")
                     force_hook = True
                     device_map = _determine_device_map(
                         model, device_map, max_memory, torch_dtype, keep_in_fp32_modules, hf_quantizer
@@ -935,11 +942,23 @@ class ModelMixin(torch.nn.Module, PushToHubMixin):
                     "error_msgs": [],
                 }
             else:
+                print("did from_config")
+                print(cls)
+                torch.cuda.synchronzie("cuda")
+                start = time.time()
                 model = cls.from_config(config, **unused_kwargs)
+                torch.cuda.synchronize("cuda")
+                print(time.time()-start,"from_config")
 
+                torch.cuda.synchronzie("cuda")
+                start = time.time()
                 state_dict = load_state_dict(model_file, variant=variant)
+                torch.cuda.synchronize("cuda")
+                print(time.time()-start,"load_state_dict")
                 model._convert_deprecated_attention_blocks(state_dict)
 
+                torch.cuda.synchronzie("cuda")
+                start = time.time()
                 model, missing_keys, unexpected_keys, mismatched_keys, error_msgs = cls._load_pretrained_model(
                     model,
                     state_dict,
@@ -948,6 +967,9 @@ class ModelMixin(torch.nn.Module, PushToHubMixin):
                     ignore_mismatched_sizes=ignore_mismatched_sizes,
                 )
 
+                torch.cuda.synchronize("cuda")
+                print(time.time()-start,"load_ pretrained_model")
+
                 loading_info = {
                     "missing_keys": missing_keys,
                     "unexpected_keys": unexpected_keys,
@@ -955,6 +977,8 @@ class ModelMixin(torch.nn.Module, PushToHubMixin):
                     "error_msgs": error_msgs,
                 }
 
+        torch.cuda.synchronize("cuda")
+        start= time.time()
         if hf_quantizer is not None:
             hf_quantizer.postprocess_model(model)
             model.hf_quantizer = hf_quantizer
@@ -975,11 +999,15 @@ class ModelMixin(torch.nn.Module, PushToHubMixin):
         else:
             model.register_to_config(_name_or_path=pretrained_model_name_or_path)
 
+        torch.cuda.synchronize("cuda")
+        print(time.time()-start,"to device")
+
         # Set model in evaluation mode to deactivate DropOut modules by default
         model.eval()
         if output_loading_info:
             return model, loading_info
 
+        print(time.time()-init,"total")
         return model
 
     # Adapted from `transformers`.
