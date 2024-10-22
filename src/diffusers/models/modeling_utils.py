@@ -654,7 +654,7 @@ class ModelMixin(torch.nn.Module, PushToHubMixin):
             user_agent=user_agent,
             **kwargs,
         )
-        peint(time.time()-start,"config load")
+        print(time.time()-start,"config load")
         # no in-place modification of the original config.
         config = copy.deepcopy(config)
 
