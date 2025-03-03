@@ -661,7 +661,7 @@ class HunyuanVideoPipeline(DiffusionPipeline, HunyuanVideoLoraLoaderMixin):
 
         # 4. Prepare timesteps
         sigmas = np.linspace(1.0, 0.0, num_inference_steps + 1)[:-1] if sigmas is None else sigmas
-        if timesteps is not None:
+        if timesteps is None:
             timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, sigmas=sigmas)
         else:
             timesteps = timesteps
