@@ -497,6 +497,7 @@ class HunyuanVideoPipeline(DiffusionPipeline, HunyuanVideoLoraLoaderMixin):
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         prompt_template: Dict[str, Any] = DEFAULT_PROMPT_TEMPLATE,
         max_sequence_length: int = 256,
+        timesteps = None,
     ):
         r"""
         The call function to the pipeline for generation.
@@ -660,7 +661,11 @@ class HunyuanVideoPipeline(DiffusionPipeline, HunyuanVideoLoraLoaderMixin):
 
         # 4. Prepare timesteps
         sigmas = np.linspace(1.0, 0.0, num_inference_steps + 1)[:-1] if sigmas is None else sigmas
-        timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, sigmas=sigmas)
+        if timesteps is not None:
+            timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, sigmas=sigmas)
+        else:
+            timesteps = timesteps
+
 
         # 5. Prepare latent variables
         num_channels_latents = self.transformer.config.in_channels
